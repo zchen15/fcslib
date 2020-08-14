@@ -4,8 +4,12 @@
 import numpy as np
 import scipy as sp
 import scipy.signal
+import skimage
 import pandas as pd
 import nptdms
+
+# plotting libraries
+import matplotlib
 
 # For interfacing with the file system
 import glob
@@ -134,6 +138,9 @@ def filter_med(y, ntaps=9):
     return sp.signal.fftconvolve(fy, filt, mode='same')
 
 def filter_sg(y, ntaps=11, order=3):
+    '''
+    Takes numpy array and filters the signal with savitzky golay filter and hamming window filter
+    '''
     fy = sp.signal.savgol_filter(y, ntaps, order)
     # apply hamming window to remove window noise
     filt = sp.signal.windows.hamming(ntaps)
@@ -227,6 +234,104 @@ def find_droplet(df):
     data['w'] = data['lw'] + data['rw']
     data['A'] = data['lA'] + data['rA']
     return data
+
+def image_bg_subtract(img, radius=10):
+    '''
+    Compute image background and subtract it and normalize intensities
+    return normalized and background subtracted image
+    '''
+    # get local average of pixel intensity
+    filt = skimage.morphology.disk(radius)
+    filt = filt/np.sum(filt)
+    bg = sp.signal.oaconvolve(img, filt, mode='same')    
+    # subtract local background
+    fimg = img-bg
+    # normalize the pixel intensity
+    fimg = fimg/np.std(fimg)
+    return fimg
+
+def image_local_std(img, radius=10):
+    '''
+    Get local z score
+    '''
+    # get local average of pixel intensity
+    filt = skimage.morphology.disk(radius)
+    filt = filt/np.sum(filt)
+    # mean
+    m1 = sp.signal.oaconvolve(img*img, filt, mode='same')
+    # second moment
+    m2 = sp.signal.oaconvolve(img, filt, mode='same')
+    # local variance
+    s = m2 - m1**2
+    # normalize the pixel intensity locally
+    fimg = (img-m1)/s
+    # normalize values globally
+    fimg = fimg/np.std(fimg)
+    return fimg
+
+def image_get_edge(img, method='otsu', erode=False, skeletonize=False):
+    '''
+    Compute droplet edge using brightfield pixel intensity
+    '''
+    if method=='kmeans':
+        clst = sklearn.cluster.KMeans(n_clusters=2)
+        d = img.reshape((img.size,1))
+        clst.fit(d)
+        L = clst.labels_.reshape(x.shape)
+        idx = 0
+        m = 0
+        # edges are the darkest pixels
+        for i in np.unique(L):
+            v = np.mean(img[L==i])
+            if m > v:
+                m = v
+                idx = i
+        edges = (L==idx)
+    else:
+        # edge via otsu threshold
+        th = skimage.filters.threshold_otsu(img)
+        edges = (img < th)
+    
+    # do a few binary closing operations
+    mask = edges > 0
+    if erode:
+        for i in range(0,100):
+            mask = skimage.morphology.closing(mask > 0, selem=np.ones((3,3)))
+    if skeletonize:
+        mask = skimage.morphology.skeletonize(mask)
+    return mask
+
+def image_get_mask(img, mask):
+    '''
+    Gets the labeled binary mask for the images
+    return binary mask of droplots
+    '''
+    # threshold to get binary mask
+    mask = ~(edge > 0)
+    # apply bwlabel
+    label, n_features = sp.ndimage.measurements.label(mask)
+    # get some morphological properties
+    return label
+
+def image_overlay(img, mask, color):
+    '''
+    Convert image to color and overlay mask with given color
+    return img array with pixel values for rgb in [0,1] range
+    '''
+    # convert image to 8bit color
+    if len(img.shape)!=3:
+        dx,dy = img.shape
+        x = np.zeros((dx,dy,3))
+        M = np.max(img)
+        for i in range(0,3):
+            x[:,:,i] = img/M
+    else:
+        x = img
+    # apply mask of color to one of the channels
+    c = matplotlib.colors.to_rgb(color)
+    for i in range(0,3):
+        x[mask,i] = c[i]
+    return x
 
 def main():
     print('Hello world')
