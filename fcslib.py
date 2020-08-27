@@ -79,21 +79,27 @@ def model_MAK2_fit(df, chan='FAM', th=10):
         data.append([w,D0,Fb,k, res.fun, res.success])
     return pd.DataFrame(data, columns=['well','D0','Fb','k','error','success'])
 
-def read_tdms(fname, chan=6):
+def read_tdms(fname, chan=6, fs=20e3, get_time=False):
     '''
     Reads data from tdms file with nptdms
+    chan = number of channels
+    fs = sampling rate. Defaults to 20Hz
+    get_time = try to get default time encoded in tdms file
     return dataframe of time and channels
     '''
     tdms_file = nptdms.TdmsFile.read(fname)
     df = tdms_file.as_dataframe(absolute_time=True, scaled_data=False)
     df = df[df.columns[:chan]]
     df.columns = ['ai'+str(i) for i in range(0,chan)]
-    # Add time information
-    all_groups = tdms_file.groups()
-    c = str(all_groups[0]).split('\'')[1]
-    group = tdms_file[c]
-    t = group.channels()[0].time_track()
-    df['time (s)'] = t
+    if get_time:
+        # Add time information
+        all_groups = tdms_file.groups()
+        c = str(all_groups[0]).split('\'')[1]
+        group = tdms_file[c]
+        t = group.channels()[0].time_track()
+        df['time (s)'] = t
+    else:
+        df['time (s)'] = np.arange(len(df))/fs
     return df
 
 def channel_offset(df):
@@ -170,6 +176,35 @@ def plot_line_bokeh(x, y, color='blue', label='signal', p=None, title='', xlabel
     p.line(x, y, line_width=1, color=color, alpha=0.8, muted_color=color, muted_alpha=0.1, legend_label=label)
     return p
 
+def normalize_signal(df, ntaps=9):
+    '''
+    Normalize the channels relative to each other using background noise
+    returns dataframe normalized to noise
+    '''
+    com = np.ones(len(df))
+    for i in range(0,6):
+        # get the channel
+        y = df['ai'+str(i)]
+        # using wiener filter to get the approximate true signal
+        fy = filter_wiener(y, ntaps)
+        # get the noise
+        noise = fy-y
+        # background subtract and normalize to noise
+        ynorm = (y-np.mean(y))/np.std(noise)
+        df['norm_ai'+str(i)] = ynorm
+        # merge channel into common signal for rough signal segmentation
+        com+=ynorm
+    # clean up the common channel
+    y = com
+    # using wiener filter to get the approximate true signal
+    fy = filter_wiener(y, ntaps)
+    # get the noise
+    noise = fy-y
+    # background subtract and normalize to noise
+    ynorm = (y-np.mean(y))/np.std(noise)
+    df['com_ai'] = ynorm
+    return df
+
 def find_peaks(y):
     '''
     Takes filtered signal and finds peak/trough
@@ -194,7 +229,7 @@ def find_peaks(y):
 def find_droplet(df):
     '''
     Takes peaks/troughs and segments droplets from raw signal
-    df = dataframe with [time, signal, peak, trough]
+    df = dataframe with [time (s), peak, trough, signal]
     returns dataframe with [time, peak height, width, and etc]
     '''
     # label pulses based on peaks and trough
@@ -228,14 +263,51 @@ def find_droplet(df):
     for i in range(0,len(s1)):
         lA.append(np.sum(fy[s1[i]:s2[i]]))
         rA.append(np.sum(fy[s2[i]:s3[i]]))
-    data = np.transpose([t,s1,s2,s3,lh,ph,rh,lw,rw,lA,rA])
-    col = ['time (s)','x1','x2','x3','lh','ph','rh','lw','rw','lA','rA']
+    data = np.transpose([t,lh,ph,rh,lw,rw,lA,rA])
+    col = ['time (s)','lH','H','rH','lW','rW','lA','rA']
     data = pd.DataFrame(data, columns=col)
-    data['w'] = data['lw'] + data['rw']
+    data['W'] = data['lW'] + data['rW']
     data['A'] = data['lA'] + data['rA']
     return data
 
-def image_bg_subtract(img, radius=10):
+def get_droplets(fname, ntaps=11, N_chan=6):
+    '''
+    Pipeline to convert time series signal into FCS signal
+    ntaps = length of wiener filter used
+    N_chan = number of channels in tdms voltage file
+    return dataframe with droplets width, height, area, and location
+    '''
+    # load tdms file
+    print('Loading ', fname)
+    df = read_tdms(fname)
+    # normalize signal intensity using background noise
+    print('Normalizing signal intensities and getting common signal')
+    df = normalize_signal(df, ntaps=11)
+    # find peaks using first derivative on common signal
+    print('Finding peaks')
+    pk = find_peaks(df['com_ai'])
+    # merge peak calling info into time series dataframe
+    df['peak'] = pk['peak']
+    df['trough'] = pk['trough']
+    # get droplet signal for each channel
+    data = []
+    for i in range(N_chan):
+        chan = 'ai'+str(i)
+        print('Computing droplet signal on '+chan)
+        x = df[['time (s)','peak','trough',chan]]
+        x.columns = ['time (s)','peak','trough','signal']
+        out = find_droplet(x)        
+        out.columns = ['time (s)'] + [chan+'-'+col for col in out.columns[1:]]
+        data.append(out)
+    # merge data frames
+    print('Merging dataframes')
+    df = data[0]
+    for i in range(1,N_chan):
+        df = df.merge(data[i], on='time (s)', how='left')
+    df['src'] = fname
+    return df
+    
+def image_bg_subtract(img, radius=10, mode='valid'):
     '''
     Compute image background and subtract it and normalize intensities
     return normalized and background subtracted image
@@ -243,12 +315,17 @@ def image_bg_subtract(img, radius=10):
     # get local average of pixel intensity
     filt = skimage.morphology.disk(radius)
     filt = filt/np.sum(filt)
-    bg = sp.signal.oaconvolve(img, filt, mode='same')    
+    bg = sp.signal.oaconvolve(img, filt, mode=mode)
+    if mode=='valid':
+        img = image_edge_crop(img,radius)
     # subtract local background
     fimg = img-bg
     # normalize the pixel intensity
     fimg = fimg/np.std(fimg)
     return fimg
+
+def image_edge_crop(img, r=10):
+    return img[r:-r,r:-r]
 
 def image_local_std(img, radius=10):
     '''
@@ -269,7 +346,7 @@ def image_local_std(img, radius=10):
     fimg = fimg/np.std(fimg)
     return fimg
 
-def image_get_edge(img, method='otsu', erode=False, skeletonize=False):
+def image_get_edge(img, method='otsu', higher=False, erode=False, skeletonize=False):
     '''
     Compute droplet edge using brightfield pixel intensity
     '''
@@ -283,14 +360,18 @@ def image_get_edge(img, method='otsu', erode=False, skeletonize=False):
         # edges are the darkest pixels
         for i in np.unique(L):
             v = np.mean(img[L==i])
-            if m > v:
-                m = v
+            c = m > v
+            if higher:
+                c = ~c
+            if c:
                 idx = i
         edges = (L==idx)
     else:
         # edge via otsu threshold
         th = skimage.filters.threshold_otsu(img)
         edges = (img < th)
+        if higher:
+            edges = ~edges
     
     # do a few binary closing operations
     mask = edges > 0
@@ -301,19 +382,24 @@ def image_get_edge(img, method='otsu', erode=False, skeletonize=False):
         mask = skimage.morphology.skeletonize(mask)
     return mask
 
-def image_get_mask(img, mask):
+def image_get_labels(mask, img=None, properties=['label','area','perimeter','centroid']):
     '''
     Gets the labeled binary mask for the images
-    return binary mask of droplots
+    mask = binary mask of droplets
+    img = intensity values of pixels for region prop computation
+    return labeled binary mask of droplets and region properties
     '''
-    # threshold to get binary mask
-    mask = ~(edge > 0)
     # apply bwlabel
     label, n_features = sp.ndimage.measurements.label(mask)
     # get some morphological properties
-    return label
+    if ('mean_intensity' in properties) and type(img)==None:
+        print('Error!! No intensity image given.')
+        return label, -1
+    else:
+        props = skimage.measure.regionprops_table(label, intensity_image=img, cache=True, properties=properties)
+        return label, props
 
-def image_overlay(img, mask, color):
+def image_mask_overlay(img, mask, color):
     '''
     Convert image to color and overlay mask with given color
     return img array with pixel values for rgb in [0,1] range
@@ -332,6 +418,30 @@ def image_overlay(img, mask, color):
     for i in range(0,3):
         x[mask,i] = c[i]
     return x
+
+def image_fluor_overlay(bf, rfu, colors, bf_weight=1):
+    '''
+    Add fluorescence intensity color to brightfield image
+    bf = 2D array containing black white intensity values
+    rfu = array of 2D arrays [rfu1, rfu2, rfu3, ...] containing rfu signal
+    colors = array containing colors and weights such as [['green', 1.0], ['blue',0.5]]
+    return img array with pixel values for rgb in [0,1] range
+    '''
+    # apply mask of color to one of the channels
+    dx,dy = bf.shape
+    img = np.zeros((dx,dy,3))
+    # add each channel of colors
+    for j in range(0,len(colors)):
+        c = matplotlib.colors.to_rgb(colors[j][0])
+        v = rfu[j]/np.max(rfu[j])
+        for i in range(0,3):
+            img[:,:,i] = img[:,:,i] + colors[j][1]*c[i]*v
+    
+    # add brightfield
+    for i in range(0,3):
+        img[:,:,i]+=bf_weight*bf/np.max(bf)
+    # normalize each rgb from 0 to 1
+    return img/np.max(img)
 
 def main():
     print('Hello world')
