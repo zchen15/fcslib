@@ -7,6 +7,7 @@ import scipy.signal
 import skimage
 import pandas as pd
 import nptdms
+import hdbscan
 
 # plotting libraries
 import matplotlib
@@ -186,7 +187,7 @@ def normalize_signal(df, ntaps=9):
         # get the channel
         y = df['ai'+str(i)]
         # using wiener filter to get the approximate true signal
-        fy = filter_wiener(y, ntaps)
+        fy = filter_sg(y, ntaps)
         # get the noise
         noise = fy-y
         # background subtract and normalize to noise
@@ -197,7 +198,7 @@ def normalize_signal(df, ntaps=9):
     # clean up the common channel
     y = com
     # using wiener filter to get the approximate true signal
-    fy = filter_wiener(y, ntaps)
+    fy = filter_sg(y, ntaps)
     # get the noise
     noise = fy-y
     # background subtract and normalize to noise
@@ -270,19 +271,20 @@ def find_droplet(df):
     data['A'] = data['lA'] + data['rA']
     return data
 
-def get_droplets(fname, ntaps=11, N_chan=6):
+def get_droplets(fname, ntaps=11, N_chan=6, fs=20e3):
     '''
     Pipeline to convert time series signal into FCS signal
     ntaps = length of wiener filter used
-    N_chan = number of channels in tdms voltage file
+    N_chan = name of channels
+    fs = sampling frequency
     return dataframe with droplets width, height, area, and location
     '''
     # load tdms file
     print('Loading ', fname)
-    df = read_tdms(fname)
+    df = read_tdms(fname, chan=N_chan, fs=fs)
     # normalize signal intensity using background noise
     print('Normalizing signal intensities and getting common signal')
-    df = normalize_signal(df, ntaps=11)
+    df = normalize_signal(df, ntaps=ntaps)
     # find peaks using first derivative on common signal
     print('Finding peaks')
     pk = find_peaks(df['com_ai'])
@@ -291,22 +293,34 @@ def get_droplets(fname, ntaps=11, N_chan=6):
     df['trough'] = pk['trough']
     # get droplet signal for each channel
     data = []
-    for i in range(N_chan):
-        chan = 'ai'+str(i)
+    channels = ['ai'+str(i) for i in range(N_chan)] + ['com_ai']
+    for chan in channels:
         print('Computing droplet signal on '+chan)
-        x = df[['time (s)','peak','trough',chan]]
-        x.columns = ['time (s)','peak','trough','signal']
+        x = df[['time (s)','peak','trough']]
+        # filter the signal
+        x['signal'] = filter_sg(df[chan], ntaps=ntaps, order=3)
         out = find_droplet(x)        
         out.columns = ['time (s)'] + [chan+'-'+col for col in out.columns[1:]]
         data.append(out)
     # merge data frames
     print('Merging dataframes')
     df = data[0]
-    for i in range(1,N_chan):
+    for i in range(1,len(data)):
         df = df.merge(data[i], on='time (s)', how='left')
     df['src'] = fname
     return df
-    
+
+def gate_droplets(df):
+    '''
+    Gate droplets using hdbscan to find and exclude noise
+    '''
+    H = df['com_ai-H']
+    A = df['com_ai-A']
+    W = A/H
+    clust = hdbscan.HDBSCAN(min_cluster_size=100)
+    clust.fit(np.transpose([W,H]))
+    return df[clust.labels_==-1]
+
 def image_bg_subtract(img, radius=10, mode='valid'):
     '''
     Compute image background and subtract it and normalize intensities
