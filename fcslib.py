@@ -514,8 +514,10 @@ class FlowFrame:
         '''
         df = self.to_dataframe()
         # take a subsample
-        idx = np.random.permutation(len(df))[:self.params['subsamples']]
-        return df.iloc[idx]
+        if self.params['subsamples'] > 0:
+            idx = np.random.permutation(len(df))[:self.params['subsamples']]
+            df = df.iloc[idx]
+        return df
 
     def copy(self):
         '''
@@ -563,6 +565,16 @@ class FlowFrame:
         Sets subset to something
         '''
 
+    def __add__(self, other):
+        if type(other).__name__ == 'FlowFrame':
+            self.fcs_files+= other.fcs_files
+        return self
+
+    def __radd__(self, other):
+        if type(other).__name__ == 'FlowFrame':
+            self.fcs_files = other.fcs_files + self.fcs_files
+        return self
+
     def __len__(self):
         '''
         Returns number of files in the dataset
@@ -608,10 +620,16 @@ class FlowFrame:
     
         '''
 
-    def polygon_gate(self):
+    def polygon_gate(df, chan, pos):
         '''
-        Add
+        Add polygon gate based on convex hull
+        df = input data
+        chan = channels
+        pos = list of coordinates for convex hull
         '''
+        x = df[chan].values
+
+
 
     def smart_ellipse_gate(self):
         '''
