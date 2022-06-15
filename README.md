@@ -12,9 +12,7 @@ pip3 install scikit-learn
 fcslib can be installed by cloning this repository with the following commands.
 ```bash
 git clone https://github.com/zchen15/fcslib	# clones this repository
-mkdir project/					# make a folder for a jupyter notebook
-touch notebook.ipynb				# make a jupyter notebook
-ln -s ../fcslib.py . 				# adds links to current directory of your juypter notebook so fcslib can be imported for use
+bash install.sh
 ```
 
 # General usage

@@ -1,0 +1,31 @@
+# pyproject.toml
+
+[build-system]
+requires      = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fcslib"
+version = "0.10.0"
+description = "A python based library for analyzing flow cytometry and droplet pcr data"
+readme = "README.md"
+authors = [{ name = "Zhewei Chen", email = "zchen@github.oom/zchen15" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: MIT License"
+]
+keywords = ["flow", "droplet"]
+dependencies = [
+    "matplotlib",
+    "bokeh",
+    "pandas",
+    "scipy",
+]
+requires-python = ">=3.7"
+
+[project.optional-dependencies]
+dev = ["isort", "pip-tools", "pytest"]
+
+[project.urls]
+Homepage = "https://github.com/zchen15/fcslib"
+
